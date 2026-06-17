@@ -1,0 +1,7 @@
+brytonsync_settings.json
+.env
+.venv/
+build/
+.dart_tool/
+downloads/
+*.fit
