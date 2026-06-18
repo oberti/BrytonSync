@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
-import threading
 import webbrowser
 from pathlib import Path
 from typing import Any
 
 import flet as ft
 
-from brytonsync.config import DEFAULT_DROPBOX_APP_KEY, SyncConfig
+from brytonsync.config import SyncConfig
 from brytonsync.dropbox_client import new_pkce_flow, test_dropbox_connection
+from brytonsync.planned_workout_sync import sync_planned_workouts
 from brytonsync.sync import sync
+
+DEFAULT_DROPBOX_APP_KEY = "4e9vei57q5t2jnw"
 
 SETTINGS_FILE = Path("brytonsync_settings.json")
 
@@ -32,8 +34,8 @@ def main(page: ft.Page) -> None:
     page.title = "BrytonSync"
     page.theme_mode = ft.ThemeMode.SYSTEM
     page.scroll = ft.ScrollMode.AUTO
-    page.window_width = 450
-    page.window_height = 850
+    page.window_width = 470
+    page.window_height = 900
 
     settings = load_settings()
     oauth_flow: dict[str, Any] = {"flow": None}
@@ -54,9 +56,15 @@ def main(page: ft.Page) -> None:
 
     intervals_api_key = field("Intervals API key", "intervals_api_key", password=True)
     intervals_athlete_id = field(
-        "Intervals Athlete ID (solo numero, senza i)",
+        "Intervals Athlete ID",
         "intervals_athlete_id",
         default="999999",
+    )
+
+    planned_days_ahead = field(
+        "Giorni futuri workout",
+        "planned_days_ahead",
+        default="14",
     )
 
     dropbox_auth_code = ft.TextField(
@@ -71,15 +79,15 @@ def main(page: ft.Page) -> None:
     max_activities = field("Numero attività", "max_activities", default="5")
 
     upload_intervals = ft.Checkbox(
-        label="Carica su intervals.icu",
+        label="Carica attività su intervals.icu",
         value=bool(settings.get("upload_intervals", False)),
     )
     upload_dropbox = ft.Checkbox(
-        label="Carica su Dropbox",
+        label="Carica attività su Dropbox",
         value=bool(settings.get("upload_dropbox", False)),
     )
     force_resync = ft.Checkbox(
-        label="Forza re-sync",
+        label="Forza re-sync attività",
         value=bool(settings.get("force_resync", False)),
     )
     delete_after_upload = ft.Checkbox(
@@ -91,13 +99,15 @@ def main(page: ft.Page) -> None:
         label="Log",
         value="",
         multiline=True,
-        min_lines=6,
-        max_lines=8,
+        min_lines=8,
+        max_lines=10,
         read_only=True,
         text_size=10,
     )
 
-    run_btn = ft.ElevatedButton("Sincronizza")
+    sync_activities_btn = ft.ElevatedButton("Sync uscite")
+    sync_workouts_btn = ft.ElevatedButton("Sync workout")
+    sync_all_btn = ft.ElevatedButton("Sync tutto")
     save_btn = ft.OutlinedButton("Salva impostazioni")
     connect_dropbox_btn = ft.ElevatedButton("Collega Dropbox")
     save_dropbox_code_btn = ft.OutlinedButton("Salva codice Dropbox")
@@ -132,12 +142,19 @@ def main(page: ft.Page) -> None:
             dropbox_folder=(dropbox_folder.value or "/BrytonSync").strip(),
         )
 
+    def get_days_ahead() -> int:
+        try:
+            return int(planned_days_ahead.value or "14")
+        except ValueError:
+            return 14
+
     def current_settings() -> dict[str, Any]:
         return {
             "bryton_email": bryton_email.value or "",
             "bryton_password": bryton_password.value or "",
             "intervals_api_key": intervals_api_key.value or "",
             "intervals_athlete_id": intervals_athlete_id.value or "999999",
+            "planned_days_ahead": planned_days_ahead.value or "14",
             "dropbox_refresh_token": dropbox_refresh_token.value or "",
             "dropbox_folder": dropbox_folder.value or "/BrytonSync",
             "max_activities": max_activities.value or "5",
@@ -162,11 +179,17 @@ def main(page: ft.Page) -> None:
 
             try:
                 await page.launch_url(auth_url)
+                append_log("Apertura browser richiesta.")
             except Exception:
-                opened = webbrowser.open(auth_url)
-                if not opened:
-                    append_log("Non sono riuscito ad aprire il browser automaticamente.")
-                    append_log("Copia e incolla manualmente questo URL nel browser:")
+                try:
+                    opened = webbrowser.open(auth_url, new=2)
+                    if opened:
+                        append_log("Browser aperto tramite fallback.")
+                    else:
+                        append_log("Apri manualmente questo URL:")
+                        append_log(auth_url)
+                except Exception:
+                    append_log("Apri manualmente questo URL:")
                     append_log(auth_url)
 
         except Exception as exc:
@@ -194,7 +217,7 @@ def main(page: ft.Page) -> None:
             dropbox_refresh_token.value = refresh
             upload_dropbox.value = True
             save_settings(current_settings())
-            append_log("Dropbox collegato. Refresh token salvato nelle impostazioni.")
+            append_log("Dropbox collegato. Refresh token salvato.")
             page.update()
 
         except Exception as exc:
@@ -210,33 +233,118 @@ def main(page: ft.Page) -> None:
         except Exception as exc:
             append_log(f"ERRORE Dropbox: {exc}")
 
-    def run_sync() -> None:
-        run_btn.disabled = True
+    def set_buttons(disabled: bool) -> None:
+        sync_activities_btn.disabled = disabled
+        sync_workouts_btn.disabled = disabled
+        sync_all_btn.disabled = disabled
         page.update()
 
+    def run_activities_sync() -> None:
+        set_buttons(True)
         try:
             save_clicked(None)
             log_view.value = ""
-            append_log("Avvio sincronizzazione...")
+            append_log("Avvio sync uscite...")
 
             cfg = get_cfg()
-            results = sync(cfg, log=append_log)
+            results = sync(cfg)
 
-            append_log("Fatto.")
+            append_log("Sync uscite completata.")
             append_log(json.dumps(results, indent=2, ensure_ascii=False))
 
         except Exception as exc:
-            append_log(f"ERRORE: {exc}")
+            append_log(f"ERRORE sync uscite: {exc}")
 
         finally:
-            run_btn.disabled = False
-            page.update()
+            set_buttons(False)
+            append_log("Completato.")
 
-    def run_clicked(e: ft.ControlEvent) -> None:
-        threading.Thread(target=run_sync, daemon=True).start()
+
+    def run_workouts_sync() -> None:
+        set_buttons(True)
+        try:
+            save_clicked(None)
+            log_view.value = ""
+            append_log("Avvio sync workout pianificati...")
+
+            cfg = get_cfg()
+            if not cfg.intervals_api_key:
+                raise ValueError("Intervals API key mancante.")
+
+            results = sync_planned_workouts(
+                bryton_email=cfg.bryton_email,
+                bryton_password=cfg.bryton_password,
+                intervals_api_key=cfg.intervals_api_key,
+                intervals_athlete_id="0",
+                days_ahead=get_days_ahead(),
+                output_dir=Path("planned_workouts"),
+                dry_run=False,
+            )
+
+            append_log("Sync workout completata.")
+            append_log(json.dumps(results, indent=2, ensure_ascii=False))
+
+        except Exception as exc:
+            append_log(f"ERRORE sync workout: {exc}")
+
+
+        finally:
+            set_buttons(False)
+            append_log("Completato.")
+            
+
+    def run_all_sync() -> None:
+        set_buttons(True)
+        try:
+            save_clicked(None)
+            log_view.value = ""
+            append_log("Avvio sync completa...")
+
+            cfg = get_cfg()
+            results: dict[str, Any] = {}
+
+            append_log("Sync uscite...")
+            results["activities"] = sync(cfg)
+
+            if not cfg.intervals_api_key:
+                raise ValueError("Intervals API key mancante per sync workout.")
+
+            append_log("Sync workout...")
+            results["workouts"] = sync_planned_workouts(
+                bryton_email=cfg.bryton_email,
+                bryton_password=cfg.bryton_password,
+                intervals_api_key=cfg.intervals_api_key,
+                intervals_athlete_id="0",
+                days_ahead=get_days_ahead(),
+                output_dir=Path("planned_workouts"),
+                dry_run=False,
+            )
+
+            append_log("Sync completa terminata.")
+            append_log(json.dumps(results, indent=2, ensure_ascii=False))
+
+        except Exception as exc:
+            append_log(f"ERRORE sync completa: {exc}")
+
+
+        finally:
+            set_buttons(False)
+            append_log("Completato.")
+
+
+    def sync_activities_clicked(e: ft.ControlEvent) -> None:
+        page.run_thread(run_activities_sync)
+
+    def sync_workouts_clicked(e: ft.ControlEvent) -> None:
+        page.run_thread(run_workouts_sync)
+
+    def sync_all_clicked(e: ft.ControlEvent) -> None:
+        page.run_thread(run_all_sync)
 
     save_btn.on_click = save_clicked
-    run_btn.on_click = run_clicked
+    sync_activities_btn.on_click = sync_activities_clicked
+    sync_workouts_btn.on_click = sync_workouts_clicked
+    sync_all_btn.on_click = sync_all_clicked
     connect_dropbox_btn.on_click = connect_dropbox_clicked
     save_dropbox_code_btn.on_click = save_dropbox_code_clicked
     test_dropbox_btn.on_click = test_dropbox_clicked
@@ -245,9 +353,9 @@ def main(page: ft.Page) -> None:
         ft.SafeArea(
             ft.Column(
                 controls=[
-                    ft.Text("BrytonSync", size=20, weight=ft.FontWeight.BOLD),
+                    ft.Text("BrytonSync v2.0.0", size=20, weight=ft.FontWeight.BOLD),
                     ft.Text(
-                        "Bryton Active → FIT → intervals.icu / Dropbox",
+                        "Bryton uscite → Intervals/Dropbox | Intervals workout → Bryton Active",
                         size=11,
                     ),
                     ft.Divider(height=6),
@@ -257,13 +365,11 @@ def main(page: ft.Page) -> None:
                     upload_intervals,
                     intervals_api_key,
                     intervals_athlete_id,
+                    planned_days_ahead,
                     ft.Divider(height=6),
                     upload_dropbox,
                     ft.Text("Dropbox OAuth PKCE", size=12, weight=ft.FontWeight.BOLD),
-                    ft.Text(
-                        "L'app apre Dropbox e salva il refresh token.",
-                        size=10,
-                    ),
+                    ft.Text("L'app apre Dropbox e salva il refresh token.", size=10),
                     ft.Row([connect_dropbox_btn, test_dropbox_btn], wrap=True),
                     dropbox_auth_code,
                     save_dropbox_code_btn,
@@ -273,7 +379,9 @@ def main(page: ft.Page) -> None:
                     max_activities,
                     force_resync,
                     delete_after_upload,
-                    ft.Row([save_btn, run_btn]),
+                    ft.Row([save_btn], wrap=True),
+                    ft.Row([sync_activities_btn, sync_workouts_btn], wrap=True),
+                    ft.Row([sync_all_btn], wrap=True),
                     log_view,
                 ],
                 spacing=4,

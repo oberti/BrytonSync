@@ -1,5 +1,0 @@
-.env
-.venv/
-downloads/
-*.fit
-__pycache__/

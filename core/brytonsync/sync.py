@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .bryton_client import BrytonClient
+from .bryton_client import BrytonClient, BrytonClientError
 from .config import SyncConfig
 from .dropbox_client import DropboxClient
 from .intervals_client import IntervalsClient
@@ -24,11 +24,33 @@ def fit_filename_from_activity(activity: dict[str, Any], fallback_id: str) -> st
     start_time = activity.get("start_time")
 
     if start_time:
-        return datetime.fromtimestamp(
-            int(start_time)
-        ).strftime("%y%m%d%H%M%S.fit")
+        return datetime.fromtimestamp(int(start_time)).strftime("%y%m%d%H%M%S.fit")
 
     return f"{fallback_id}.fit"
+
+
+def _make_dropbox_client(config: SyncConfig) -> DropboxClient:
+    refresh_token = getattr(config, "dropbox_refresh_token", None)
+    app_key = getattr(config, "dropbox_app_key", None)
+    access_token = getattr(config, "dropbox_access_token", None)
+
+    if refresh_token and app_key:
+        return DropboxClient(
+            app_key=app_key,
+            refresh_token=refresh_token,
+            folder=config.dropbox_folder,
+        )
+
+    if access_token:
+        return DropboxClient(
+            access_token=access_token,
+            folder=config.dropbox_folder,
+        )
+
+    raise ValueError(
+        "UPLOAD_DROPBOX=true ma Dropbox non è configurato. "
+        "Collega Dropbox dalla GUI oppure imposta DROPBOX_ACCESS_TOKEN."
+    )
 
 
 def sync(config: SyncConfig) -> list[dict[str, Any]]:
@@ -44,9 +66,7 @@ def sync(config: SyncConfig) -> list[dict[str, Any]]:
 
     dropbox_client = None
     if config.upload_dropbox:
-        if not config.dropbox_access_token:
-            raise ValueError("UPLOAD_DROPBOX=true ma DROPBOX_ACCESS_TOKEN non impostato")
-        dropbox_client = DropboxClient(config.dropbox_access_token, config.dropbox_folder)
+        dropbox_client = _make_dropbox_client(config)
 
     activities = bryton.list_activities(since=config.since, limit=config.max_activities)
     print(f"Attività trovate: {len(activities)}")
@@ -66,6 +86,13 @@ def sync(config: SyncConfig) -> list[dict[str, Any]]:
         if config.list_activities:
             print(f"- {activity_id}: {activity}")
 
+        if activity.get("name") == "_deleted":
+            print("  skip: attività cancellata")
+            row["status"] = "skipped_deleted"
+            row["reason"] = "deleted_activity"
+            results.append(row)
+            continue
+
         if intervals and not config.force_resync and intervals.exists_external_id(external_id):
             print(f"  skip: già presente su intervals.icu ({external_id})")
             row["status"] = "skipped_exists"
@@ -76,7 +103,15 @@ def sync(config: SyncConfig) -> list[dict[str, Any]]:
             results.append(row)
             continue
 
-        detail = bryton.get_activity_detail(activity_id)
+        try:
+            detail = bryton.get_activity_detail(activity_id)
+        except BrytonClientError as exc:
+            print(f"  skip: dettaglio attività non disponibile ({exc})")
+            row["status"] = "skipped_detail_error"
+            row["reason"] = str(exc)
+            results.append(row)
+            continue
+
         fit_url = bryton.find_fit_url(detail)
 
         row["detail"] = make_json_safe(detail)

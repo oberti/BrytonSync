@@ -11,13 +11,39 @@ class IntervalsClientError(RuntimeError):
 
 
 class IntervalsClient:
-    def __init__(self, api_key: str, athlete_id: str = "999999", timeout: int = 60) -> None:
+    def __init__(self, api_key: str, athlete_id: str = "i999999", timeout: int = 60) -> None:
         self.api_key = api_key
-        self.athlete_id = str(athlete_id).strip().lstrip("i")
+        self.athlete_id = athlete_id
         self.timeout = timeout
         self.base_url = "https://intervals.icu/api/v1"
         self.session = requests.Session()
         self.session.auth = ("API_KEY", api_key)
+
+    def list_activities(self, oldest: str = "2000-01-01", newest: str = "2100-01-01") -> list[dict[str, Any]]:
+        resp = self.session.get(
+            f"{self.base_url}/athlete/{self.athlete_id}/activities",
+            params={"oldest": oldest, "newest": newest},
+            timeout=self.timeout,
+        )
+        if not resp.ok:
+            raise IntervalsClientError(f"Intervals list fallita {resp.status_code}: {resp.text[:500]}")
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
+    def list_events(self, oldest: str, newest: str, resolve: bool = True) -> list[dict[str, Any]]:
+        resp = self.session.get(
+            f"{self.base_url}/athlete/{self.athlete_id}/events",
+            params={
+                "oldest": oldest,
+                "newest": newest,
+                "resolve": str(resolve).lower(),
+            },
+            timeout=self.timeout,
+        )
+        if not resp.ok:
+            raise IntervalsClientError(f"Intervals events fallita {resp.status_code}: {resp.text[:500]}")
+        data = resp.json()
+        return data if isinstance(data, list) else []
 
     def exists_external_id(self, external_id: str) -> bool:
         resp = self.session.get(
@@ -37,6 +63,7 @@ class IntervalsClient:
             params["external_id"] = external_id
         if activity_type:
             params["type"] = activity_type
+
         with fit_path.open("rb") as handle:
             files = {"file": (fit_path.name, handle, "application/octet-stream")}
             resp = self.session.post(

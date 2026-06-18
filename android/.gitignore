@@ -1,7 +1,7 @@
 brytonsync_settings.json
-.env
-.venv/
-build/
-.dart_tool/
 downloads/
-*.fit
+planned_workouts/
+__pycache__/
+*.pyc
+build/
+dist/

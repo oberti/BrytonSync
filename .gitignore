@@ -11,6 +11,12 @@ venv/
 # Config personali
 .env
 brytonsync_settings.json
+download/
+downloads/
+planned_workouts/
+logs/
+build/
+dist/
 
 # FIT files
 downloads/
@@ -32,3 +38,7 @@ desktop.ini
 
 # APK locali
 *.apk
+*.pyc
+
+#cache
+__pycache__/

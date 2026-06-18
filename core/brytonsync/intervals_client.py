@@ -30,9 +30,22 @@ class IntervalsClient:
         data = resp.json()
         return data if isinstance(data, list) else []
 
+    def list_events(self, oldest: str, newest: str, resolve: bool = True) -> list[dict[str, Any]]:
+        resp = self.session.get(
+            f"{self.base_url}/athlete/{self.athlete_id}/events",
+            params={
+                "oldest": oldest,
+                "newest": newest,
+                "resolve": str(resolve).lower(),
+            },
+            timeout=self.timeout,
+        )
+        if not resp.ok:
+            raise IntervalsClientError(f"Intervals events fallita {resp.status_code}: {resp.text[:500]}")
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
     def exists_external_id(self, external_id: str) -> bool:
-        # intervals.icu has changed activity filtering over time; robust fallback:
-        # try a direct external_id filter, then scan recent/all returned items.
         resp = self.session.get(
             f"{self.base_url}/athlete/{self.athlete_id}/activities",
             params={"oldest": "2000-01-01", "newest": "2100-01-01", "external_id": external_id},
@@ -48,7 +61,6 @@ class IntervalsClient:
         params: dict[str, str] = {}
         if external_id:
             params["external_id"] = external_id
-        # Some intervals.icu deployments ignore sport on upload; kept as best effort.
         if activity_type:
             params["type"] = activity_type
 

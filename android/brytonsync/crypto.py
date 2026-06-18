@@ -1,40 +1,78 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import time
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import unpad
+from typing import Iterable
 
 AES_KEY = "G9uX0Fjd"
 
 
-def _java_xor(data: str, key: str) -> str:
+def xor_encrypt_decrypt(data: str, key: str) -> str:
     if not key:
         return data
     return "".join(chr(ord(ch) ^ ord(key[i % len(key)])) for i, ch in enumerate(data))
 
 
-def _b64_iso_8859_1(text: str) -> str:
-    return base64.b64encode(text.encode("latin-1", errors="strict")).decode("ascii")
+def b64_iso_8859_1(text: str) -> str:
+    return base64.b64encode(text.encode("iso-8859-1", errors="strict")).decode("ascii")
 
 
-def decrypt_bryton_aes(encrypted_data64: str, key_input: str = AES_KEY) -> str:
-    # Java AESUtil: key = SHA-256(key_input), payload = Base64(IV + ciphertext), AES/CBC/PKCS5Padding
-    key = hashlib.sha256(key_input.encode("utf-8")).digest()
-    payload = base64.b64decode(encrypted_data64)
-    iv, ciphertext = payload[:16], payload[16:]
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    return unpad(cipher.decrypt(ciphertext), AES.block_size).decode("utf-8")
+def b64_utf8(text: str) -> str:
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
 
 
 def make_login_payload(email: str, password: str, login_pwd_key: str) -> dict[str, str]:
-    enc_pwd = _java_xor(password, login_pwd_key)
-    password_b64 = _b64_iso_8859_1(enc_pwd)
+    """Build the same login payload as Bryton Active.
 
-    expires = int(time.time()) + 86400
-    key_raw = f"{expires} {login_pwd_key}"
-    enc_key = _java_xor(key_raw, login_pwd_key)
-    key_b64 = base64.b64encode(enc_key.encode("utf-8", errors="surrogatepass")).decode("ascii")
+    Decompiled logic:
+      password = Base64( XOR(raw_password, loginPwdKey) ) using ISO-8859-1 bytes
+      key      = Base64( XOR(f"{unix+86400} {loginPwdKey}", loginPwdKey) )
+    """
+    pwd_xor = xor_encrypt_decrypt(password, login_pwd_key)
+    expires_and_key = f"{int(time.time()) + 86400} {login_pwd_key}"
+    key_xor = xor_encrypt_decrypt(expires_and_key, login_pwd_key)
+    return {
+        "email": email,
+        "password": b64_iso_8859_1(pwd_xor),
+        "key": b64_utf8(key_xor),
+    }
 
-    return {"email": email, "password": password_b64, "key": key_b64}
+
+def _pkcs7_unpad(data: bytes) -> bytes:
+    if not data:
+        return data
+    pad = data[-1]
+    if pad < 1 or pad > 16:
+        return data
+    if data[-pad:] != bytes([pad]) * pad:
+        return data
+    return data[:-pad]
+
+
+def decrypt_bryton_aes(cipher_text_b64: str, aes_key: str = AES_KEY) -> str:
+    """Decrypt Bryton announcement values exactly like AESUtil.java.
+
+    Java logic:
+      key = SHA-256(keyInput UTF-8)
+      raw = Base64.decode(encryptedData64, NO_WRAP)
+      iv = raw[0:16]
+      ciphertext = raw[16:]
+      AES/CBC/PKCS5Padding
+    """
+    try:
+        from Crypto.Cipher import AES
+        from Crypto.Hash import SHA256
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("Installa pycryptodome: pip install pycryptodome") from exc
+
+    raw = base64.b64decode(cipher_text_b64)
+    if len(raw) <= 16:
+        raise ValueError("Payload AES Bryton non valido: meno di 17 byte dopo Base64")
+
+    key_bytes = SHA256.new(aes_key.encode("utf-8")).digest()
+    iv = raw[:16]
+    encrypted = raw[16:]
+
+    cipher = AES.new(key_bytes, AES.MODE_CBC, iv=iv)
+    plain = _pkcs7_unpad(cipher.decrypt(encrypted))
+    return plain.decode("utf-8")
